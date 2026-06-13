@@ -1,0 +1,10 @@
+title       = "comick"
+baseURL     = "https://comick-cli.tamnd.com/"
+description = "Browse manga and comics on comick.io"
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/comick-cli"
