@@ -3,6 +3,7 @@
 package comick
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -42,19 +43,44 @@ type Chapter struct {
 
 // ─── wire types (unexported, JSON decode only) ────────────────────────────────
 
+// wireGenreList decodes the genres field, which the API returns as either
+// a plain string array ["Action"] or an object array [{"name":"Action"}].
+type wireGenreList []string
+
+func (g *wireGenreList) UnmarshalJSON(b []byte) error {
+	// try plain string array first
+	var ss []string
+	if err := json.Unmarshal(b, &ss); err == nil {
+		*g = ss
+		return nil
+	}
+	// fall back to object array {name: ...}
+	var objs []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(b, &objs); err != nil {
+		return err
+	}
+	*g = make(wireGenreList, len(objs))
+	for i, o := range objs {
+		(*g)[i] = o.Name
+	}
+	return nil
+}
+
 type wireComic struct {
-	HID           string    `json:"hid"`
-	Slug          string    `json:"slug"`
-	Title         string    `json:"title"`
-	Country       string    `json:"country"`
-	Status        int       `json:"status"`
-	ContentRating string    `json:"content_rating"`
-	LastChapter   string    `json:"last_chapter"`
-	Demographic   string    `json:"demographic"`
-	Type          string    `json:"type"`
-	Genres        []string  `json:"genres"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	HID           string        `json:"hid"`
+	Slug          string        `json:"slug"`
+	Title         string        `json:"title"`
+	Country       string        `json:"country"`
+	Status        int           `json:"status"`
+	ContentRating string        `json:"content_rating"`
+	LastChapter   string        `json:"last_chapter"`
+	Demographic   string        `json:"demographic"`
+	Type          string        `json:"type"`
+	Genres        wireGenreList `json:"genres"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
 type wireComicDetail struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tamnd/comick-cli/comick"
@@ -174,6 +175,172 @@ func TestGetComicNotFound(t *testing.T) {
 	})
 	c := newTestClient(t, mux)
 	_, err := c.GetComic(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, comick.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSearchSortParam(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/search/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("sort") != "rating" {
+			t.Errorf("sort = %q, want %q", r.URL.Query().Get("sort"), "rating")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"hid":"r1","slug":"rated-manga","title":"Rated Manga","country":"jp","status":1,"content_rating":"safe","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]`))
+	})
+	c := newTestClient(t, mux)
+	comics, err := c.Search(context.Background(), "manga", 5, "rating", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comics) != 1 {
+		t.Fatalf("len = %d, want 1", len(comics))
+	}
+}
+
+func TestChaptersLangParam(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/comic/abc123/chapters", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("lang") != "fr" {
+			t.Errorf("lang = %q, want %q", r.URL.Query().Get("lang"), "fr")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"chapters":[{"hid":"ch99","chap":"1","lang":"fr","group_name":["FrTeam"],"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}],"total":1}`))
+	})
+	c := newTestClient(t, mux)
+	chapters, err := c.GetChapters(context.Background(), "abc123", 10, 1, "fr", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapters) != 1 {
+		t.Fatalf("len = %d, want 1", len(chapters))
+	}
+	if chapters[0].Lang != "fr" {
+		t.Errorf("lang = %q, want %q", chapters[0].Lang, "fr")
+	}
+}
+
+func TestChaptersAscOrder(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/comic/abc123/chapters", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("chap-order") != "0" {
+			t.Errorf("chap-order = %q, want %q", r.URL.Query().Get("chap-order"), "0")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"chapters":[{"hid":"ch1","chap":"1","lang":"en","group_name":[],"created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"}],"total":1}`))
+	})
+	c := newTestClient(t, mux)
+	_, err := c.GetChapters(context.Background(), "abc123", 10, 1, "en", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusMapping(t *testing.T) {
+	cases := []struct {
+		status int
+		want   string
+	}{
+		{1, "ongoing"},
+		{2, "completed"},
+		{3, "cancelled"},
+		{4, "hiatus"},
+		{99, "unknown"},
+	}
+	for _, tc := range cases {
+		mux := http.NewServeMux()
+		tc := tc
+		mux.HandleFunc("/v1.0/search/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"hid":"s1","slug":"test","title":"Test","country":"jp","status":` +
+				itoa(tc.status) + `,"content_rating":"safe","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]`))
+		})
+		c := newTestClient(t, mux)
+		comics, err := c.Search(context.Background(), "test", 1, "", "", "")
+		if err != nil {
+			t.Fatalf("status %d: %v", tc.status, err)
+		}
+		if comics[0].StatusText != tc.want {
+			t.Errorf("status %d: StatusText = %q, want %q", tc.status, comics[0].StatusText, tc.want)
+		}
+	}
+}
+
+func itoa(n int) string {
+	if n < 0 {
+		return "-" + itoa(-n)
+	}
+	if n < 10 {
+		return string(rune('0' + n))
+	}
+	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+func TestGenresJoined(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/search/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// genres returned as objects (the real API shape)
+		_, _ = w.Write([]byte(`[{"hid":"g1","slug":"genre-manga","title":"Genre Manga","country":"jp","status":1,"content_rating":"safe","genres":[{"name":"Action"},{"name":"Fantasy"},{"name":"Adventure"}],"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]`))
+	})
+	c := newTestClient(t, mux)
+	comics, err := c.Search(context.Background(), "genre", 1, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comics) != 1 {
+		t.Fatalf("len = %d, want 1", len(comics))
+	}
+	if comics[0].Genres != "Action;Fantasy;Adventure" {
+		t.Errorf("genres = %q, want %q", comics[0].Genres, "Action;Fantasy;Adventure")
+	}
+}
+
+func TestRetriesOn503(t *testing.T) {
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/search/", func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`service unavailable`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"hid":"retry1","slug":"retry-manga","title":"Retry Manga","country":"jp","status":1,"content_rating":"safe","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]`))
+	})
+	cfg := comick.DefaultConfig()
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	cfg.BaseURL = ts.URL
+	cfg.Rate = 0
+	cfg.Retries = 3
+	c := comick.NewClient(cfg)
+
+	comics, err := c.Search(context.Background(), "retry", 1, "", "", "")
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if len(comics) != 1 {
+		t.Fatalf("len = %d, want 1", len(comics))
+	}
+	if calls.Load() != 3 {
+		t.Errorf("calls = %d, want 3", calls.Load())
+	}
+}
+
+func TestGetComicEmptyBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/comic/empty/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	})
+	c := newTestClient(t, mux)
+	_, err := c.GetComic(context.Background(), "empty")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
